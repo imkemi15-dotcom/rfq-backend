@@ -3,31 +3,38 @@ const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
 const FormData = require("form-data");
-
-// Add to package.json: "engines": { "node": ">=18" }
-// OR uncomment below and run: npm install node-fetch
-// const fetch = (...a) => import("node-fetch").then(({ default: f }) => f(...a));
+const https = require("https");
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 
+// ✅ Fix CORS
 app.use(cors({
-  origin: "*", // replace with your domain e.g. "https://bearingsdirect.com"
-  methods: ["POST", "GET"]
+  origin: "*",
+  methods: ["POST", "GET", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
 }));
+app.options("*", cors());
 app.use(express.json());
+
+// ✅ Keep Render awake (pings every 14 min)
+setInterval(() => {
+  https.get("https://rfq-backend-py0w.onrender.com", (res) => {
+    console.log("Keep-alive ping:", res.statusCode);
+  }).on("error", () => {});
+}, 14 * 60 * 1000);
 
 // ✅ Health check
 app.get("/", (req, res) => res.send("RFQ Backend is running ✅"));
 
-// ✅ File upload only route — called from frontend to avoid CORS
+// ✅ File upload route — uploads file to HubSpot File Manager
 app.post("/upload-file", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
       return res.json({ success: false, message: "No file provided" });
     }
 
-    console.log("Uploading file:", req.file.originalname, "Size:", req.file.size);
+    console.log("Uploading file:", req.file.originalname, "| Size:", req.file.size);
 
     const fileForm = new FormData();
     fileForm.append("file", req.file.buffer, {
@@ -55,7 +62,11 @@ app.post("/upload-file", upload.single("file"), async (req, res) => {
     if (fileResponse.ok && fileResult.url) {
       return res.json({ success: true, url: fileResult.url });
     } else {
-      return res.json({ success: false, message: "File upload failed", error: fileResult });
+      return res.json({
+        success: false,
+        message: "File upload failed",
+        error: fileResult
+      });
     }
 
   } catch (err) {
@@ -64,30 +75,35 @@ app.post("/upload-file", upload.single("file"), async (req, res) => {
   }
 });
 
-// ✅ Main RFQ submit route — creates HubSpot contact + handles duplicate
+// ✅ RFQ submit route — creates or updates HubSpot contact
 app.post("/submit-rfq", upload.single("file"), async (req, res) => {
   try {
     console.log("BODY RECEIVED:", JSON.stringify(req.body));
     console.log("FILE:", req.file ? req.file.originalname : "No file");
 
+    // Validate required fields
     if (!req.body.email || !req.body.name) {
-      return res.status(400).json({ success: false, message: "Email and Name are required" });
+      return res.status(400).json({
+        success: false,
+        message: "Email and Name are required"
+      });
     }
 
     const data = {
       properties: {
         email:               req.body.email,
         firstname:           req.body.name,
-        company1:            req.body.company || "",
-        phone:               req.body.phone || "",
+        company1:            req.body.company  || "",
+        phone:               req.body.phone    || "",
         project_description: req.body.project_description || "",
-        material_type:       req.body.material_type || "",
-        quantity:            req.body.quantity || "",
-        timeline:            req.body.timeline || "",
-        file_url:            req.body.file_url || ""  // ✅ file URL passed from frontend
+        material_type:       req.body.material_type       || "",
+        quantity:            req.body.quantity            || "",
+        timeline:            req.body.timeline            || "",
+        file_url:            req.body.file_url            || ""
       }
     };
 
+    // Try to create new contact
     const response = await fetch("https://api.hubapi.com/crm/v3/objects/contacts", {
       method: "POST",
       headers: {
@@ -104,13 +120,13 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
 
     console.log("HubSpot Contact Response:", result);
 
-    // ✅ Handle duplicate contact — update instead of failing
+    // Handle duplicate contact — update instead of failing
     if (!response.ok) {
       if (response.status === 409) {
-        // Contact exists — update it with PATCH
-        const existingEmail = req.body.email;
+        console.log("Contact exists — updating:", req.body.email);
+
         const updateResponse = await fetch(
-          `https://api.hubapi.com/crm/v3/objects/contacts/${existingEmail}?idProperty=email`,
+          `https://api.hubapi.com/crm/v3/objects/contacts/${req.body.email}?idProperty=email`,
           {
             method: "PATCH",
             headers: {
@@ -120,6 +136,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
             body: JSON.stringify(data)
           }
         );
+
         const updateResult = await updateResponse.json();
         console.log("HubSpot Update Result:", updateResult);
 
@@ -130,6 +147,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
         });
       }
 
+      // Other HubSpot errors
       return res.status(response.status).json({
         success: false,
         message: "HubSpot error",
@@ -137,6 +155,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
       });
     }
 
+    // Success — new contact created
     return res.json({
       success: true,
       message: "RFQ submitted successfully",
@@ -146,7 +165,11 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
 
   } catch (err) {
     console.error("Server Error:", err);
-    return res.status(500).json({ success: false, message: "Server error", error: err.message });
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: err.message
+    });
   }
 });
 

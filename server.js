@@ -28,7 +28,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
       properties: {
         email: req.body.email,
         firstname: req.body.name,
-        company: req.body.company || "",
+        company: req.body.company1 || "",
         phone: req.body.phone || "",
         project_description: req.body.project_description || "",
         material_type: req.body.material_type || "",

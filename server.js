@@ -64,24 +64,23 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
     const formGuid = "fea88d11-c240-47a8-a280-3dc28d248ab6";
 
     const formPayload = {
-      fields: [
-        { name: "firstname", value: req.body.name },
-        { name: "email", value: req.body.email },
-        { name: "phone", value: req.body.phone || "" },
-        { name: "company", value: req.body.company || "" },
-        { name: "project_description", value: req.body.project_description || "" },
-        { name: "material_type", value: req.body.material_type || "" },
-        { name: "quantity", value: req.body.quantity || "" },
-        { name: "timeline", value: req.body.timeline || "" },
-
-        // ✅ SAVE FILE URL HERE
-        { name: "file_url", value: fileUrl }
-      ],
-      context: {
-        pageUri: req.headers.origin || "RFQ Page",
-        pageName: "RFQ Form"
-      }
-    };
+  fields: [
+    { name: "email", value: req.body.email }, // MUST BE FIRST
+    { name: "firstname", value: req.body.name },
+    { name: "phone", value: req.body.phone || "" },
+    { name: "company", value: req.body.company || "" },
+    { name: "project_description", value: req.body.project_description || "" },
+    { name: "material_type", value: req.body.material_type || "" },
+    { name: "quantity", value: req.body.quantity || "" },
+    { name: "timeline", value: req.body.timeline || "" },
+    { name: "file_url", value: fileUrl }
+  ],
+  context: {
+    hutk: req.cookies?.hubspotutk || "", // ✅ VERY IMPORTANT
+    pageUri: req.headers.origin || "",
+    pageName: "RFQ Form"
+  }
+};
 
     const formRes = await fetch(
       `https://api.hsforms.com/submissions/v3/integration/submit/${portalId}/${formGuid}`,

@@ -15,46 +15,65 @@ app.get("/", (req, res) => {
   res.json({ status: "running" });
 });
 
-// ✅ Completely new test route
+// ✅ Full diagnostic test route
 app.get("/test-token", async (req, res) => {
   const results = {};
 
-  // Test 1: Basic token check
+  // Test 1: Token valid check
   try {
     const r1 = await axios.get("https://api.hubapi.com/account-info/v3/details", {
       headers: { Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}` },
       validateStatus: () => true,
     });
-    results.token_check = { status: r1.status, data: r1.data };
+    results.token_valid = r1.status === 200 ? "✅ YES" : "❌ NO - " + r1.status;
+    results.portal_id = r1.data?.portalId;
   } catch (e) {
-    results.token_check = { error: e.message };
+    results.token_valid = "❌ ERROR: " + e.message;
   }
 
-  // Test 2: Files scope check using POST search
+  // Test 2: Upload a tiny test file to check files scope
   try {
+    const testForm = new FormData();
+    const testBuffer = Buffer.from("test file content");
+    testForm.append("file", testBuffer, {
+      filename: "test.txt",
+      contentType: "text/plain",
+      knownLength: testBuffer.length,
+    });
+    testForm.append("options", JSON.stringify({
+      access: "PUBLIC_INDEXABLE",
+      overwrite: true,
+      duplicateValidationStrategy: "NONE",
+      duplicateValidationScope: "ENTIRE_PORTAL",
+    }));
+
     const r2 = await axios.post(
-      "https://api.hubapi.com/files/v3/files/search",
-      { limit: 1 },
+      "https://api.hubapi.com/files/v3/files",
+      testForm,
       {
         headers: {
           Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`,
-          "Content-Type": "application/json",
+          ...testForm.getHeaders(),
         },
         validateStatus: () => true,
       }
     );
-    results.files_scope = {
+
+    results.files_upload_test = {
       status: r2.status,
-      works: r2.status === 200,
-      data: r2.data
+      works: r2.status === 200 || r2.status === 201
+        ? "✅ YES - upload works!"
+        : "❌ NO - status " + r2.status,
+      response: r2.data,
     };
   } catch (e) {
-    results.files_scope = { error: e.message };
+    results.files_upload_test = { error: e.message };
   }
 
   res.json(results);
 });
 
+// ✅ Main form submission route
 app.post("/submit-rfq", upload.single("file"), async (req, res) => {
   res.setHeader("Content-Type", "application/json");
 
@@ -64,8 +83,18 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
 
     let fileUrl = "";
 
+    // ======================================
+    // STEP 1: Upload file to HubSpot
+    // ======================================
     if (req.file) {
       try {
+        console.log("📎 File info:", {
+          name: req.file.originalname,
+          type: req.file.mimetype,
+          size: req.file.size,
+        });
+        console.log("🔑 Token starts with:", process.env.HUBSPOT_TOKEN?.substring(0, 15));
+
         const fileFormData = new FormData();
         fileFormData.append("file", req.file.buffer, {
           filename: req.file.originalname,
@@ -79,8 +108,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
           duplicateValidationScope: "ENTIRE_PORTAL",
         }));
 
-        console.log("⬆️ Uploading to HubSpot...");
-        console.log("🔑 Token starts with:", process.env.HUBSPOT_TOKEN?.substring(0, 15));
+        console.log("⬆️ Uploading to HubSpot Files API...");
 
         const uploadRes = await axios.post(
           "https://api.hubapi.com/files/v3/files",
@@ -106,7 +134,9 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
             uploadRes.data?.full_path ||
             uploadRes.data?.defaultHostingUrl || "";
 
+          // ✅ If no URL but have ID — fetch file details
           if (!fileUrl && uploadRes.data?.id) {
+            console.log("🔍 Fetching file URL by ID:", uploadRes.data.id);
             const fileDetail = await axios.get(
               `https://api.hubapi.com/files/v3/files/${uploadRes.data.id}`,
               {
@@ -121,15 +151,21 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
               fileDetail.data?.defaultHostingUrl ||
               fileDetail.data?.full_path || "";
           }
+
           console.log("✅ Final fileUrl:", fileUrl);
+
         } else {
           console.error("❌ Upload failed:", uploadRes.status, JSON.stringify(uploadRes.data));
         }
+
       } catch (fileError) {
-        console.error("❌ File exception:", fileError.message);
+        console.error("❌ File upload exception:", fileError.message);
       }
     }
 
+    // ======================================
+    // STEP 2: Submit HubSpot form
+    // ======================================
     const portalId = "46017352";
     const formGuid = "fea88d11-c240-47a8-a280-3dc28d248ab6";
 
@@ -177,11 +213,16 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
     });
 
   } catch (error) {
-    console.error("💥 FATAL:", error.message);
-    return res.status(500).json({ success: false, message: "Server error", error: error.message });
+    console.error("💥 FATAL ERROR:", error.message);
+    return res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
   }
 });
 
+// Global error handler
 app.use((err, req, res, next) => {
   console.error("💥 EXPRESS ERROR:", err.message);
   res.status(500).json({ success: false, error: err.message });

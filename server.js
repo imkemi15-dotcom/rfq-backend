@@ -105,7 +105,8 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
 
     console.log("Form Status:", formRes.status);
     console.log("Form Response:", formText);
-
+console.log("Final File URL:", fileUrl);
+    console.log("Form Payload:", formPayload);
     if (!formRes.ok) {
       return res.status(400).json({
         success: false,

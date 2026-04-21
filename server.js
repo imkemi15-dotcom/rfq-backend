@@ -7,7 +7,7 @@ const FormData = require("form-data");
 
 const app = express();
 
-// ✅ Memory storage (important for Render)
+// ✅ Memory storage (Render safe)
 const upload = multer({ storage: multer.memoryStorage() });
 
 app.use(cors());
@@ -24,39 +24,42 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
 
     let fileUrl = "";
 
-    // ================================
+    // ======================================
     // ✅ STEP 1: Upload file to HubSpot
-    // ================================
+    // ======================================
     if (req.file) {
       const formData = new FormData();
+
       formData.append("file", req.file.buffer, req.file.originalname);
       formData.append(
         "options",
-        JSON.stringify({ access: "PUBLIC_INDEXABLE" })
+        JSON.stringify({
+          access: "PUBLIC_INDEXABLE"
+        })
       );
+      formData.append("folderPath", "/rfq-uploads");
 
-      const uploadRes = await fetch(
-        "https://api.hubapi.com/files/v3/files",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`,
-            ...formData.getHeaders()
-          },
-          body: formData
-        }
-      );
+      const uploadRes = await fetch("https://api.hubapi.com/files/v3/files", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`,
+          ...formData.getHeaders()
+        },
+        body: formData
+      });
 
       const uploadData = await uploadRes.json();
 
       console.log("File Upload Response:", uploadData);
 
-      fileUrl = uploadData.url || "";
+      if (uploadRes.ok && uploadData.url) {
+        fileUrl = uploadData.url;
+      }
     }
 
-    // ==================================
-    // ✅ STEP 2: Submit to HubSpot Form API
-    // ==================================
+    // ======================================
+    // ✅ STEP 2: Submit to HubSpot Form
+    // ======================================
     const portalId = "46017352";
     const formGuid = "fea88d11-c240-47a8-a280-3dc28d248ab6";
 
@@ -71,11 +74,11 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
         { name: "quantity", value: req.body.quantity || "" },
         { name: "timeline", value: req.body.timeline || "" },
 
-        // ✅ Save file URL in HubSpot
+        // ✅ SAVE FILE URL HERE
         { name: "file_url", value: fileUrl }
       ],
       context: {
-        pageUri: req.headers.origin || "BigCommerce RFQ",
+        pageUri: req.headers.origin || "RFQ Page",
         pageName: "RFQ Form"
       }
     };
@@ -91,23 +94,26 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
       }
     );
 
-    const formResult = await formRes.text();
+    const formText = await formRes.text();
 
     console.log("Form Status:", formRes.status);
-    console.log("Form Response:", formResult);
+    console.log("Form Response:", formText);
 
     if (!formRes.ok) {
       return res.status(400).json({
         success: false,
         message: "Form submission failed",
-        error: formResult
+        error: formText
       });
     }
 
+    // ======================================
+    // ✅ FINAL SUCCESS
+    // ======================================
     return res.json({
       success: true,
-      message: "RFQ submitted successfully ✅",
-      file: fileUrl
+      message: "RFQ submitted successfully 🎉",
+      file_url: fileUrl
     });
 
   } catch (error) {

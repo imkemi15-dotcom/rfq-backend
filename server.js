@@ -2,41 +2,53 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
+const axios = require("axios");
 const FormData = require("form-data");
 
 const app = express();
-
 const upload = multer({ storage: multer.memoryStorage() });
 
 app.use(cors());
 app.use(express.json());
 
 app.get("/", (req, res) => {
-  res.json({ status: "RFQ Backend is running ✅" }); // ✅ return JSON not plain text
+  res.json({ status: "running" });
+});
+
+// ✅ TEST ROUTE — visit this to confirm token and scopes work
+app.get("/test-token", async (req, res) => {
+  try {
+    const response = await axios.get("https://api.hubapi.com/files/v3/files?limit=1", {
+      headers: {
+        Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`,
+      },
+    });
+    res.json({ success: true, message: "Token works ✅", data: response.data });
+  } catch (err) {
+    res.json({
+      success: false,
+      message: "Token failed ❌",
+      status: err.response?.status,
+      error: err.response?.data,
+    });
+  }
 });
 
 app.post("/submit-rfq", upload.single("file"), async (req, res) => {
-  // ✅ Always set JSON header first — so even errors return JSON
   res.setHeader("Content-Type", "application/json");
 
   try {
-    console.log("📩 Incoming body:", req.body);
-    console.log("📎 File received:", req.file ? req.file.originalname : "No file");
+    console.log("📩 Body:", req.body);
+    console.log("📎 File:", req.file?.originalname || "none");
 
     let fileUrl = "";
 
     // ======================================
-    // STEP 1: Upload file to HubSpot
+    // STEP 1: Upload file using axios (more reliable than fetch)
     // ======================================
     if (req.file) {
       try {
-        console.log("📎 File info:", {
-          name: req.file.originalname,
-          type: req.file.mimetype,
-          size: req.file.size,
-        });
-
-        const fileFormData = new FormData(); // ✅ renamed to avoid conflict with FormData import
+        const fileFormData = new FormData();
 
         fileFormData.append("file", req.file.buffer, {
           filename: req.file.originalname,
@@ -44,49 +56,64 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
           knownLength: req.file.size,
         });
 
-        fileFormData.append(
-          "options",
-          JSON.stringify({
-            access: "PUBLIC_INDEXABLE",
-            overwrite: false,
-            duplicateValidationStrategy: "NONE",
-            duplicateValidationScope: "ENTIRE_PORTAL",
-          })
+        fileFormData.append("options", JSON.stringify({
+          access: "PUBLIC_INDEXABLE",
+          overwrite: false,
+          duplicateValidationStrategy: "NONE",
+          duplicateValidationScope: "ENTIRE_PORTAL",
+        }));
+
+        console.log("⬆️ Uploading to HubSpot Files...");
+
+        // ✅ Using axios instead of fetch — better multipart/form-data handling
+        const uploadRes = await axios.post(
+          "https://api.hubapi.com/files/v3/files",
+          fileFormData,
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`,
+              ...fileFormData.getHeaders(),
+            },
+            maxContentLength: Infinity,
+            maxBodyLength: Infinity,
+          }
         );
 
-        console.log("⬆️ Uploading file to HubSpot...");
+        console.log("📤 Upload Status:", uploadRes.status);
+        console.log("📤 Upload Response:", JSON.stringify(uploadRes.data, null, 2));
 
-        const uploadRes = await fetch("https://api.hubapi.com/files/v3/files", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`,
-            ...fileFormData.getHeaders(),
-          },
-          body: fileFormData,
-        });
+        if (uploadRes.data?.url) {
+          fileUrl = uploadRes.data.url;
+          console.log("✅ File URL:", fileUrl);
+        } else if (uploadRes.data?.id) {
+          // ✅ Sometimes HubSpot returns id but not url — fetch url separately
+          const fileId = uploadRes.data.id;
+          console.log("🔍 Got file ID, fetching URL:", fileId);
 
-        const uploadData = await uploadRes.json();
+          const fileRes = await axios.get(
+            `https://api.hubapi.com/files/v3/files/${fileId}`,
+            {
+              headers: {
+                Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`,
+              },
+            }
+          );
 
-        console.log("📤 Upload HTTP Status:", uploadRes.status);
-        console.log("📤 Upload Response:", JSON.stringify(uploadData, null, 2));
-
-        if (uploadRes.ok && uploadData.url) {
-          fileUrl = uploadData.url;
-          console.log("✅ File uploaded successfully:", fileUrl);
-        } else {
-          // ✅ Log error but DO NOT throw — form will still submit without file
-          console.error("❌ File upload failed. Status:", uploadRes.status);
-          console.error("❌ Reason:", JSON.stringify(uploadData));
+          console.log("📄 File details:", JSON.stringify(fileRes.data, null, 2));
+          fileUrl = fileRes.data?.url || fileRes.data?.cdn_purge_urls?.[0] || "";
+          console.log("✅ Final File URL:", fileUrl);
         }
 
       } catch (fileError) {
-        // ✅ File upload error is caught separately — form still submits
+        console.error("❌ File upload error status:", fileError.response?.status);
+        console.error("❌ File upload error data:", JSON.stringify(fileError.response?.data));
         console.error("❌ File upload exception:", fileError.message);
+        // ✅ Don't stop — continue form submission without file
       }
     }
 
     // ======================================
-    // STEP 2: Submit form to HubSpot
+    // STEP 2: Submit HubSpot form
     // ======================================
     const portalId = "46017352";
     const formGuid = "fea88d11-c240-47a8-a280-3dc28d248ab6";
@@ -101,38 +128,33 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
       { name: "quantity",            value: req.body.quantity            || "" },
       { name: "timeline",            value: req.body.timeline            || "" },
       { name: "file_url",            value: fileUrl                           },
-    ].filter(field => field.value !== "");
+    ].filter(f => f.value !== "");
 
-    const formPayload = {
-      fields,
-      context: {
-        pageUri: req.headers.origin || "",
-        pageName: "RFQ Form",
-      },
-    };
-
-    console.log("📋 Submitting to HubSpot form...");
     console.log("📋 file_url being sent:", fileUrl);
-    console.log("📋 Full payload:", JSON.stringify(formPayload, null, 2));
 
-    const formRes = await fetch(
+    const formRes = await axios.post(
       `https://api.hsforms.com/submissions/v3/integration/submit/${portalId}/${formGuid}`,
       {
-        method: "POST",
+        fields,
+        context: {
+          pageUri: req.headers.origin || "",
+          pageName: "RFQ Form",
+        },
+      },
+      {
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formPayload),
+        validateStatus: () => true, // ✅ don't throw on 4xx
       }
     );
 
-    const formText = await formRes.text();
-    console.log("📝 Form Submit Status:", formRes.status);
-    console.log("📝 Form Submit Response:", formText);
+    console.log("📝 Form Status:", formRes.status);
+    console.log("📝 Form Response:", JSON.stringify(formRes.data, null, 2));
 
-    if (!formRes.ok) {
+    if (formRes.status !== 200) {
       return res.status(400).json({
         success: false,
         message: "Form submission failed",
-        error: formText,
+        error: formRes.data,
       });
     }
 
@@ -143,8 +165,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
     });
 
   } catch (error) {
-    // ✅ This catches ANY unexpected error and returns JSON — never HTML
-    console.error("💥 SERVER ERROR:", error);
+    console.error("💥 FATAL ERROR:", error.message);
     return res.status(500).json({
       success: false,
       message: "Server error",
@@ -153,14 +174,10 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
   }
 });
 
-// ✅ Global error handler — catches anything Express itself throws
+// Global error handler
 app.use((err, req, res, next) => {
-  console.error("💥 GLOBAL ERROR:", err);
-  res.status(500).json({
-    success: false,
-    message: "Unexpected server error",
-    error: err.message,
-  });
+  console.error("💥 EXPRESS ERROR:", err.message);
+  res.status(500).json({ success: false, error: err.message });
 });
 
 const PORT = process.env.PORT || 3000;

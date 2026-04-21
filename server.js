@@ -7,30 +7,20 @@ const FormData = require("form-data");
 
 const app = express();
 
-// ✅ Use memory storage (important for Render)
+// ✅ Memory storage (important for Render)
 const upload = multer({ storage: multer.memoryStorage() });
 
 app.use(cors());
 app.use(express.json());
 
-// ✅ Test route
 app.get("/", (req, res) => {
   res.send("RFQ Backend is running ✅");
 });
 
-// ✅ RFQ API
 app.post("/submit-rfq", upload.single("file"), async (req, res) => {
   try {
     console.log("Incoming:", req.body);
-    console.log("File:", req.file ? req.file.originalname : "No file");
-
-    // ✅ Validation
-    if (!req.body.email || !req.body.name) {
-      return res.status(400).json({
-        success: false,
-        message: "Email and Name are required"
-      });
-    }
+    console.log("File:", req.file);
 
     let fileUrl = "";
 
@@ -39,124 +29,98 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
     // ================================
     if (req.file) {
       const formData = new FormData();
-
       formData.append("file", req.file.buffer, req.file.originalname);
       formData.append(
         "options",
-        JSON.stringify({
-          access: "PUBLIC_NOT_INDEXABLE"
-        })
+        JSON.stringify({ access: "PUBLIC_INDEXABLE" })
       );
-      formData.append("folderPath", "/rfq-uploads");
 
       const uploadRes = await fetch(
         "https://api.hubapi.com/files/v3/files",
         {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`
+            Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`,
+            ...formData.getHeaders()
           },
           body: formData
         }
       );
 
-      const uploadText = await uploadRes.text();
-
-      let uploadData;
-      try {
-        uploadData = uploadText ? JSON.parse(uploadText) : {};
-      } catch {
-        uploadData = { raw: uploadText };
-      }
+      const uploadData = await uploadRes.json();
 
       console.log("File Upload Response:", uploadData);
 
-      if (uploadRes.ok && uploadData.url) {
-        fileUrl = uploadData.url;
-      }
+      fileUrl = uploadData.url || "";
     }
 
-    // ================================
-    // ✅ STEP 2: Create/Update Contact
-    // ================================
-    const contactData = {
-      properties: {
-        email: req.body.email,
-        firstname: req.body.name,
-        company: req.body.company || "",
-        phone: req.body.phone || "",
-        project_description: req.body.project_description || "",
-        material_type: req.body.material_type || "",
-        quantity: req.body.quantity || "",
-        timeline: req.body.timeline || "",
-        file_url: fileUrl // 🔥 important
+    // ==================================
+    // ✅ STEP 2: Submit to HubSpot Form API
+    // ==================================
+    const portalId = "46017352";
+    const formGuid = "fea88d11-c240-47a8-a280-3dc28d248ab6";
+
+    const formPayload = {
+      fields: [
+        { name: "firstname", value: req.body.name },
+        { name: "email", value: req.body.email },
+        { name: "phone", value: req.body.phone || "" },
+        { name: "company", value: req.body.company || "" },
+        { name: "project_description", value: req.body.project_description || "" },
+        { name: "material_type", value: req.body.material_type || "" },
+        { name: "quantity", value: req.body.quantity || "" },
+        { name: "timeline", value: req.body.timeline || "" },
+
+        // ✅ Save file URL in HubSpot
+        { name: "file_url", value: fileUrl }
+      ],
+      context: {
+        pageUri: req.headers.origin || "BigCommerce RFQ",
+        pageName: "RFQ Form"
       }
     };
 
-    const response = await fetch(
-      "https://api.hubapi.com/crm/v3/objects/contacts?idProperty=email",
+    const formRes = await fetch(
+      `https://api.hsforms.com/submissions/v3/integration/submit/${portalId}/${formGuid}`,
       {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`
+          "Content-Type": "application/json"
         },
-        body: JSON.stringify(contactData)
+        body: JSON.stringify(formPayload)
       }
     );
 
-    const text = await response.text();
+    const formResult = await formRes.text();
 
-    let result;
-    try {
-      result = text ? JSON.parse(text) : {};
-    } catch {
-      result = { raw: text };
-    }
+    console.log("Form Status:", formRes.status);
+    console.log("Form Response:", formResult);
 
-    console.log("HubSpot Response:", result);
-
-    // ================================
-    // ✅ STEP 3: Handle duplicate contact
-    // ================================
-    if (!response.ok) {
-      if (response.status === 409) {
-        return res.json({
-          success: true,
-          message: "RFQ received (existing contact updated)",
-          file_url: fileUrl
-        });
-      }
-
-      return res.status(response.status).json({
+    if (!formRes.ok) {
+      return res.status(400).json({
         success: false,
-        message: "HubSpot error",
-        error: result
+        message: "Form submission failed",
+        error: formResult
       });
     }
 
-    // ================================
-    // ✅ SUCCESS RESPONSE
-    // ================================
     return res.json({
       success: true,
-      message: "RFQ submitted successfully",
-      file_url: fileUrl,
-      hubspot: result
+      message: "RFQ submitted successfully ✅",
+      file: fileUrl
     });
 
-  } catch (err) {
-    console.error("Server Error:", err);
+  } catch (error) {
+    console.error("ERROR:", error);
 
     return res.status(500).json({
       success: false,
       message: "Server error",
-      error: err.message
+      error: error.message
     });
   }
 });
 
-// ✅ Start server
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, "0.0.0.0", () => {

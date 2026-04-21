@@ -15,11 +15,8 @@ app.get("/", (req, res) => {
   res.json({ status: "running" });
 });
 
-// ✅ Full diagnostic test route
 app.get("/test-token", async (req, res) => {
   const results = {};
-
-  // Test 1: Token valid check
   try {
     const r1 = await axios.get("https://api.hubapi.com/account-info/v3/details", {
       headers: { Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}` },
@@ -30,51 +27,9 @@ app.get("/test-token", async (req, res) => {
   } catch (e) {
     results.token_valid = "❌ ERROR: " + e.message;
   }
-
-  // Test 2: Upload a tiny test file with folderId
-  try {
-    const testForm = new FormData();
-    const testBuffer = Buffer.from("test file content");
-    testForm.append("file", testBuffer, {
-      filename: "test.txt",
-      contentType: "text/plain",
-      knownLength: testBuffer.length,
-    });
-    testForm.append("options", JSON.stringify({
-      access: "PUBLIC_INDEXABLE",
-      overwrite: true,
-      duplicateValidationStrategy: "NONE",
-      duplicateValidationScope: "ENTIRE_PORTAL",
-    }));
-    testForm.append("folderId", "211430036516"); // ✅ your folder ID
-
-    const r2 = await axios.post(
-      "https://api.hubapi.com/files/v3/files",
-      testForm,
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`,
-          ...testForm.getHeaders(),
-        },
-        validateStatus: () => true,
-      }
-    );
-
-    results.files_upload_test = {
-      status: r2.status,
-      works: r2.status === 200 || r2.status === 201
-        ? "✅ YES - upload works!"
-        : "❌ NO - status " + r2.status,
-      response: r2.data,
-    };
-  } catch (e) {
-    results.files_upload_test = { error: e.message };
-  }
-
   res.json(results);
 });
 
-// ✅ Main form submission route
 app.post("/submit-rfq", upload.single("file"), async (req, res) => {
   res.setHeader("Content-Type", "application/json");
 
@@ -89,12 +44,6 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
     // ======================================
     if (req.file) {
       try {
-        console.log("📎 File info:", {
-          name: req.file.originalname,
-          type: req.file.mimetype,
-          size: req.file.size,
-        });
-
         const fileFormData = new FormData();
         fileFormData.append("file", req.file.buffer, {
           filename: req.file.originalname,
@@ -107,9 +56,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
           duplicateValidationStrategy: "NONE",
           duplicateValidationScope: "ENTIRE_PORTAL",
         }));
-        fileFormData.append("folderId", "211430036516"); // ✅ your folder ID
-
-        console.log("⬆️ Uploading to HubSpot Files API...");
+        fileFormData.append("folderId", "211430036516");
 
         const uploadRes = await axios.post(
           "https://api.hubapi.com/files/v3/files",
@@ -131,13 +78,10 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
         if (uploadRes.status === 200 || uploadRes.status === 201) {
           fileUrl =
             uploadRes.data?.url ||
-            uploadRes.data?.cdn_url ||
-            uploadRes.data?.full_path ||
-            uploadRes.data?.defaultHostingUrl || "";
+            uploadRes.data?.defaultHostingUrl ||
+            uploadRes.data?.cdn_url || "";
 
-          // ✅ If no URL but have ID — fetch file details
           if (!fileUrl && uploadRes.data?.id) {
-            console.log("🔍 Fetching file URL by ID:", uploadRes.data.id);
             const fileDetail = await axios.get(
               `https://api.hubapi.com/files/v3/files/${uploadRes.data.id}`,
               {
@@ -145,20 +89,14 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
                 validateStatus: () => true,
               }
             );
-            console.log("📄 File detail:", JSON.stringify(fileDetail.data, null, 2));
             fileUrl =
               fileDetail.data?.url ||
-              fileDetail.data?.cdn_url ||
-              fileDetail.data?.defaultHostingUrl ||
-              fileDetail.data?.full_path || "";
+              fileDetail.data?.defaultHostingUrl || "";
           }
-
           console.log("✅ Final fileUrl:", fileUrl);
-
         } else {
           console.error("❌ Upload failed:", uploadRes.status, JSON.stringify(uploadRes.data));
         }
-
       } catch (fileError) {
         console.error("❌ File upload exception:", fileError.message);
       }
@@ -182,7 +120,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
       { name: "file_url",            value: fileUrl                           },
     ].filter(f => f.value !== "");
 
-    console.log("📋 file_url being sent:", fileUrl);
+    console.log("📋 All fields being sent:", JSON.stringify(fields, null, 2));
 
     const formRes = await axios.post(
       `https://api.hsforms.com/submissions/v3/integration/submit/${portalId}/${formGuid}`,
@@ -198,6 +136,75 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
 
     console.log("📝 Form Status:", formRes.status);
     console.log("📝 Form Response:", JSON.stringify(formRes.data, null, 2));
+
+    // ======================================
+    // STEP 3: Update contact directly via API
+    // ======================================
+    // ✅ This is the key fix — update contact directly bypassing form limitations
+    if (fileUrl && req.body.email) {
+      try {
+        console.log("🔄 Updating contact directly with file_url...");
+
+        // First find the contact by email
+        const searchRes = await axios.post(
+          "https://api.hubapi.com/crm/v3/objects/contacts/search",
+          {
+            filterGroups: [{
+              filters: [{
+                propertyName: "email",
+                operator: "EQ",
+                value: req.body.email,
+              }]
+            }],
+            properties: ["email", "file_url"],
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`,
+              "Content-Type": "application/json",
+            },
+            validateStatus: () => true,
+          }
+        );
+
+        console.log("🔍 Search Status:", searchRes.status);
+        console.log("🔍 Search Response:", JSON.stringify(searchRes.data, null, 2));
+
+        const contactId = searchRes.data?.results?.[0]?.id;
+
+        if (contactId) {
+          // Update the contact with file_url
+          const updateRes = await axios.patch(
+            `https://api.hubapi.com/crm/v3/objects/contacts/${contactId}`,
+            {
+              properties: {
+                file_url: fileUrl,
+              },
+            },
+            {
+              headers: {
+                Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`,
+                "Content-Type": "application/json",
+              },
+              validateStatus: () => true,
+            }
+          );
+
+          console.log("✏️ Update Status:", updateRes.status);
+          console.log("✏️ Update Response:", JSON.stringify(updateRes.data, null, 2));
+
+          if (updateRes.status === 200) {
+            console.log("✅ Contact updated with file_url successfully!");
+          } else {
+            console.error("❌ Contact update failed:", updateRes.status, JSON.stringify(updateRes.data));
+          }
+        } else {
+          console.error("❌ Contact not found for email:", req.body.email);
+        }
+      } catch (updateError) {
+        console.error("❌ Contact update exception:", updateError.message);
+      }
+    }
 
     if (formRes.status !== 200) {
       return res.status(400).json({
@@ -223,7 +230,6 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
   }
 });
 
-// Global error handler
 app.use((err, req, res, next) => {
   console.error("💥 EXPRESS ERROR:", err.message);
   res.status(500).json({ success: false, error: err.message });

@@ -15,26 +15,23 @@ app.get("/", (req, res) => {
   res.json({ status: "running" });
 });
 
-// ✅ Test token and show all scopes
+// ✅ Test if files scope is working
 app.get("/test-token", async (req, res) => {
   try {
-    const response = await axios.get(
-      "https://api.hubapi.com/oauth/v1/access-tokens/" + process.env.HUBSPOT_TOKEN
+    const r = await axios.get(
+      "https://api.hubapi.com/files/v3/files?limit=1",
+      {
+        headers: { Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}` },
+        validateStatus: () => true,
+      }
     );
     res.json({
-      success: true,
-      message: "Token works ✅",
-      scopes: response.data.scopes,
-      hub_id: response.data.hub_id,
-      token_type: response.data.token_type,
+      files_scope_works: r.status === 200 ? "✅ YES - file upload will work" : "❌ NO - still getting " + r.status,
+      status: r.status,
+      response: r.data,
     });
   } catch (err) {
-    res.json({
-      success: false,
-      message: "Token failed ❌",
-      status: err.response?.status,
-      error: err.response?.data,
-    });
+    res.json({ error: err.message });
   }
 });
 
@@ -52,6 +49,13 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
     // ======================================
     if (req.file) {
       try {
+        console.log("📎 File info:", {
+          name: req.file.originalname,
+          type: req.file.mimetype,
+          size: req.file.size,
+        });
+        console.log("🔑 Token (first 15 chars):", process.env.HUBSPOT_TOKEN?.substring(0, 15));
+
         const fileFormData = new FormData();
 
         fileFormData.append("file", req.file.buffer, {
@@ -67,8 +71,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
           duplicateValidationScope: "ENTIRE_PORTAL",
         }));
 
-        console.log("⬆️ Uploading to HubSpot...");
-        console.log("🔑 Token starts with:", process.env.HUBSPOT_TOKEN?.substring(0, 10));
+        console.log("⬆️ Uploading to HubSpot Files API...");
 
         const uploadRes = await axios.post(
           "https://api.hubapi.com/files/v3/files",
@@ -80,7 +83,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
             },
             maxContentLength: Infinity,
             maxBodyLength: Infinity,
-            validateStatus: () => true, // never throw on any status
+            validateStatus: () => true,
           }
         );
 
@@ -88,7 +91,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
         console.log("📤 Upload Response:", JSON.stringify(uploadRes.data, null, 2));
 
         if (uploadRes.status === 200 || uploadRes.status === 201) {
-          // ✅ Try every possible field HubSpot might return URL in
+          // ✅ Try every possible URL field HubSpot might return
           fileUrl =
             uploadRes.data?.url ||
             uploadRes.data?.cdn_url ||
@@ -96,9 +99,9 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
             uploadRes.data?.defaultHostingUrl ||
             "";
 
-          // ✅ If still no URL but we have an ID, fetch it
+          // ✅ If no URL but have ID — fetch file details separately
           if (!fileUrl && uploadRes.data?.id) {
-            console.log("🔍 No URL in response, fetching by ID:", uploadRes.data.id);
+            console.log("🔍 No URL in upload response, fetching by ID:", uploadRes.data.id);
             try {
               const fileDetail = await axios.get(
                 `https://api.hubapi.com/files/v3/files/${uploadRes.data.id}`,
@@ -109,7 +112,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
                   validateStatus: () => true,
                 }
               );
-              console.log("📄 File detail:", JSON.stringify(fileDetail.data, null, 2));
+              console.log("📄 File detail response:", JSON.stringify(fileDetail.data, null, 2));
               fileUrl =
                 fileDetail.data?.url ||
                 fileDetail.data?.cdn_url ||
@@ -151,7 +154,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
       { name: "file_url",            value: fileUrl                           },
     ].filter(f => f.value !== "");
 
-    console.log("📋 file_url being sent:", fileUrl);
+    console.log("📋 Fields being sent:", JSON.stringify(fields, null, 2));
 
     const formRes = await axios.post(
       `https://api.hsforms.com/submissions/v3/integration/submit/${portalId}/${formGuid}`,
@@ -195,6 +198,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
   }
 });
 
+// Global error handler
 app.use((err, req, res, next) => {
   console.error("💥 EXPRESS ERROR:", err.message);
   res.status(500).json({ success: false, error: err.message });

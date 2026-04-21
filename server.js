@@ -15,49 +15,44 @@ app.get("/", (req, res) => {
   res.json({ status: "running" });
 });
 
-// ✅ Test if files scope is working
-// ✅ Fixed test route
+// ✅ Completely new test route
 app.get("/test-token", async (req, res) => {
+  const results = {};
+
+  // Test 1: Basic token check
   try {
-    // ✅ Use account info endpoint to verify token works
-    const r = await axios.get(
-      "https://api.hubapi.com/account-info/v3/details",
+    const r1 = await axios.get("https://api.hubapi.com/account-info/v3/details", {
+      headers: { Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}` },
+      validateStatus: () => true,
+    });
+    results.token_check = { status: r1.status, data: r1.data };
+  } catch (e) {
+    results.token_check = { error: e.message };
+  }
+
+  // Test 2: Files scope check using POST search
+  try {
+    const r2 = await axios.post(
+      "https://api.hubapi.com/files/v3/files/search",
+      { limit: 1 },
       {
-        headers: { Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}` },
+        headers: {
+          Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`,
+          "Content-Type": "application/json",
+        },
         validateStatus: () => true,
       }
     );
-
-    if (r.status === 200) {
-      // ✅ Token valid — now test files scope specifically
-      const fileTest = await axios.post(
-        "https://api.hubapi.com/files/v3/files/search",
-        { limit: 1 },
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`,
-            "Content-Type": "application/json",
-          },
-          validateStatus: () => true,
-        }
-      );
-
-      res.json({
-        token_valid: "✅ YES",
-        portal_id: r.data?.portalId,
-        files_scope: fileTest.status === 200 ? "✅ files scope works" : "❌ files scope missing - status: " + fileTest.status,
-        files_response: fileTest.data,
-      });
-    } else {
-      res.json({
-        token_valid: "❌ NO",
-        status: r.status,
-        error: r.data,
-      });
-    }
-  } catch (err) {
-    res.json({ error: err.message });
+    results.files_scope = {
+      status: r2.status,
+      works: r2.status === 200,
+      data: r2.data
+    };
+  } catch (e) {
+    results.files_scope = { error: e.message };
   }
+
+  res.json(results);
 });
 
 app.post("/submit-rfq", upload.single("file"), async (req, res) => {
@@ -69,26 +64,14 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
 
     let fileUrl = "";
 
-    // ======================================
-    // STEP 1: Upload file to HubSpot
-    // ======================================
     if (req.file) {
       try {
-        console.log("📎 File info:", {
-          name: req.file.originalname,
-          type: req.file.mimetype,
-          size: req.file.size,
-        });
-        console.log("🔑 Token (first 15 chars):", process.env.HUBSPOT_TOKEN?.substring(0, 15));
-
         const fileFormData = new FormData();
-
         fileFormData.append("file", req.file.buffer, {
           filename: req.file.originalname,
           contentType: req.file.mimetype,
           knownLength: req.file.size,
         });
-
         fileFormData.append("options", JSON.stringify({
           access: "PUBLIC_INDEXABLE",
           overwrite: false,
@@ -96,7 +79,8 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
           duplicateValidationScope: "ENTIRE_PORTAL",
         }));
 
-        console.log("⬆️ Uploading to HubSpot Files API...");
+        console.log("⬆️ Uploading to HubSpot...");
+        console.log("🔑 Token starts with:", process.env.HUBSPOT_TOKEN?.substring(0, 15));
 
         const uploadRes = await axios.post(
           "https://api.hubapi.com/files/v3/files",
@@ -116,54 +100,36 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
         console.log("📤 Upload Response:", JSON.stringify(uploadRes.data, null, 2));
 
         if (uploadRes.status === 200 || uploadRes.status === 201) {
-          // ✅ Try every possible URL field HubSpot might return
           fileUrl =
             uploadRes.data?.url ||
             uploadRes.data?.cdn_url ||
             uploadRes.data?.full_path ||
-            uploadRes.data?.defaultHostingUrl ||
-            "";
+            uploadRes.data?.defaultHostingUrl || "";
 
-          // ✅ If no URL but have ID — fetch file details separately
           if (!fileUrl && uploadRes.data?.id) {
-            console.log("🔍 No URL in upload response, fetching by ID:", uploadRes.data.id);
-            try {
-              const fileDetail = await axios.get(
-                `https://api.hubapi.com/files/v3/files/${uploadRes.data.id}`,
-                {
-                  headers: {
-                    Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`,
-                  },
-                  validateStatus: () => true,
-                }
-              );
-              console.log("📄 File detail response:", JSON.stringify(fileDetail.data, null, 2));
-              fileUrl =
-                fileDetail.data?.url ||
-                fileDetail.data?.cdn_url ||
-                fileDetail.data?.defaultHostingUrl ||
-                fileDetail.data?.full_path ||
-                "";
-            } catch (detailErr) {
-              console.error("❌ Could not fetch file detail:", detailErr.message);
-            }
+            const fileDetail = await axios.get(
+              `https://api.hubapi.com/files/v3/files/${uploadRes.data.id}`,
+              {
+                headers: { Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}` },
+                validateStatus: () => true,
+              }
+            );
+            console.log("📄 File detail:", JSON.stringify(fileDetail.data, null, 2));
+            fileUrl =
+              fileDetail.data?.url ||
+              fileDetail.data?.cdn_url ||
+              fileDetail.data?.defaultHostingUrl ||
+              fileDetail.data?.full_path || "";
           }
-
           console.log("✅ Final fileUrl:", fileUrl);
-
         } else {
-          console.error("❌ Upload failed. Status:", uploadRes.status);
-          console.error("❌ Response:", JSON.stringify(uploadRes.data));
+          console.error("❌ Upload failed:", uploadRes.status, JSON.stringify(uploadRes.data));
         }
-
       } catch (fileError) {
-        console.error("❌ File upload exception:", fileError.message);
+        console.error("❌ File exception:", fileError.message);
       }
     }
 
-    // ======================================
-    // STEP 2: Submit HubSpot form
-    // ======================================
     const portalId = "46017352";
     const formGuid = "fea88d11-c240-47a8-a280-3dc28d248ab6";
 
@@ -179,16 +145,13 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
       { name: "file_url",            value: fileUrl                           },
     ].filter(f => f.value !== "");
 
-    console.log("📋 Fields being sent:", JSON.stringify(fields, null, 2));
+    console.log("📋 file_url being sent:", fileUrl);
 
     const formRes = await axios.post(
       `https://api.hsforms.com/submissions/v3/integration/submit/${portalId}/${formGuid}`,
       {
         fields,
-        context: {
-          pageUri: req.headers.origin || "",
-          pageName: "RFQ Form",
-        },
+        context: { pageUri: req.headers.origin || "", pageName: "RFQ Form" },
       },
       {
         headers: { "Content-Type": "application/json" },
@@ -214,16 +177,11 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
     });
 
   } catch (error) {
-    console.error("💥 FATAL ERROR:", error.message);
-    return res.status(500).json({
-      success: false,
-      message: "Server error",
-      error: error.message,
-    });
+    console.error("💥 FATAL:", error.message);
+    return res.status(500).json({ success: false, message: "Server error", error: error.message });
   }
 });
 
-// Global error handler
 app.use((err, req, res, next) => {
   console.error("💥 EXPRESS ERROR:", err.message);
   res.status(500).json({ success: false, error: err.message });

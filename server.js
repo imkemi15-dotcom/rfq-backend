@@ -1,143 +1,143 @@
 require("dotenv").config();
-
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
 const FormData = require("form-data");
 
-// If Node <18 → uncomment this
-// const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
-
 const app = express();
 
-// ✅ Use memory storage (IMPORTANT for Render)
 const upload = multer({ storage: multer.memoryStorage() });
 
 app.use(cors());
 app.use(express.json());
 
-// ✅ Test route
 app.get("/", (req, res) => {
   res.send("RFQ Backend is running ✅");
 });
 
-// ✅ MAIN API
 app.post("/submit-rfq", upload.single("file"), async (req, res) => {
   try {
-    console.log("Incoming:", req.body);
-    console.log("File:", req.file);
+    console.log("📩 Incoming body:", req.body);
+    console.log("📎 File received:", req.file ? req.file.originalname : "No file");
 
     let fileUrl = "";
 
     // ======================================
-    // ✅ STEP 1: Upload file to HubSpot
+    // STEP 1: Upload file to HubSpot (if exists)
     // ======================================
     if (req.file) {
       const formData = new FormData();
 
-      formData.append("file", req.file.buffer, req.file.originalname);
+      // ✅ Correct way to append buffer with metadata
+      formData.append("file", req.file.buffer, {
+        filename: req.file.originalname,
+        contentType: req.file.mimetype,
+        knownLength: req.file.size,
+      });
 
+      // ✅ No folder needed — uploads to root
       formData.append(
         "options",
         JSON.stringify({
-          access: "PUBLIC_INDEXABLE"
+          access: "PUBLIC_INDEXABLE",
+          overwrite: false,
+          duplicateValidationStrategy: "NONE",
+          duplicateValidationScope: "ENTIRE_PORTAL",
         })
       );
 
-      formData.append("folderPath", "/rfq-uploads");
+      console.log("⬆️ Uploading file to HubSpot...");
 
       const uploadRes = await fetch("https://api.hubapi.com/files/v3/files", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`,
-          ...formData.getHeaders()
+          ...formData.getHeaders(),
         },
-        body: formData
+        body: formData,
       });
 
       const uploadData = await uploadRes.json();
 
-      console.log("File Upload Response:", uploadData);
+      console.log("📤 HubSpot Upload Status:", uploadRes.status);
+      console.log("📤 HubSpot Upload Response:", JSON.stringify(uploadData, null, 2));
 
       if (uploadRes.ok && uploadData.url) {
         fileUrl = uploadData.url;
+        console.log("✅ File uploaded successfully:", fileUrl);
+      } else {
+        // ✅ Don't block form submission if file upload fails — just log it
+        console.error("❌ File upload failed:", uploadData);
       }
     }
 
     // ======================================
-    // ✅ STEP 2: Submit to HubSpot FORM
+    // STEP 2: Submit form to HubSpot
     // ======================================
     const portalId = "46017352";
     const formGuid = "fea88d11-c240-47a8-a280-3dc28d248ab6";
 
     const formPayload = {
       fields: [
-        { name: "email", value: req.body.email },
-        { name: "firstname", value: req.body.name },
+        { name: "email", value: req.body.email || "" },
+        { name: "firstname", value: req.body.name || "" },
         { name: "phone", value: req.body.phone || "" },
         { name: "company", value: req.body.company || "" },
         { name: "project_description", value: req.body.project_description || "" },
         { name: "material_type", value: req.body.material_type || "" },
         { name: "quantity", value: req.body.quantity || "" },
         { name: "timeline", value: req.body.timeline || "" },
-
-        // ✅ IMPORTANT → this must exist in HubSpot
-        { name: "file_url", value: fileUrl }
+        { name: "file_url", value: fileUrl },
       ],
       context: {
         pageUri: req.headers.origin || "",
-        pageName: "RFQ Form"
-      }
+        pageName: "RFQ Form",
+      },
     };
+
+    console.log("📋 Submitting to HubSpot form...");
+    console.log("📋 file_url value being sent:", fileUrl);
 
     const formRes = await fetch(
       `https://api.hsforms.com/submissions/v3/integration/submit/${portalId}/${formGuid}`,
       {
         method: "POST",
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
         },
-        body: JSON.stringify(formPayload)
+        body: JSON.stringify(formPayload),
       }
     );
 
     const formText = await formRes.text();
+    console.log("📝 Form Submit Status:", formRes.status);
+    console.log("📝 Form Submit Response:", formText);
 
-    console.log("Form Status:", formRes.status);
-    console.log("Form Response:", formText);
-console.log("Final File URL:", fileUrl);
-    console.log("Form Payload:", formPayload);
     if (!formRes.ok) {
       return res.status(400).json({
         success: false,
         message: "Form submission failed",
-        error: formText
+        error: formText,
       });
     }
 
-    // ======================================
-    // ✅ SUCCESS RESPONSE
-    // ======================================
     return res.json({
       success: true,
       message: "RFQ submitted successfully 🎉",
-      file_url: fileUrl
+      file_url: fileUrl,
     });
 
   } catch (error) {
-    console.error("ERROR:", error);
-
+    console.error("💥 SERVER ERROR:", error);
     return res.status(500).json({
       success: false,
       message: "Server error",
-      error: error.message
+      error: error.message,
     });
   }
 });
 
-// ✅ Start server
 const PORT = process.env.PORT || 3000;
-
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server running on port ${PORT} 🚀`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });

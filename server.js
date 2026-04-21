@@ -77,23 +77,24 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
     const portalId = "46017352";
     const formGuid = "fea88d11-c240-47a8-a280-3dc28d248ab6";
 
-    const formPayload = {
-      fields: [
-        { name: "email", value: req.body.email || "" },
-        { name: "firstname", value: req.body.name || "" },
-        { name: "phone", value: req.body.phone || "" },
-        { name: "company", value: req.body.company || "" },
-        { name: "project_description", value: req.body.project_description || "" },
-        { name: "material_type", value: req.body.material_type || "" },
-        { name: "quantity", value: req.body.quantity || "" },
-        { name: "timeline", value: req.body.timeline || "" },
-        { name: "file_url", value: fileUrl },
-      ],
-      context: {
-        pageUri: req.headers.origin || "",
-        pageName: "RFQ Form",
-      },
-    };
+    // ✅ Only send fields that actually exist in HubSpot as Contact properties
+const formPayload = {
+  fields: [
+    { name: "email",               value: req.body.email               || "" },
+    { name: "firstname",           value: req.body.name                || "" },
+    { name: "phone",               value: req.body.phone               || "" },
+    { name: "company",             value: req.body.company             || "" },
+    { name: "project_description", value: req.body.project_description || "" },
+    { name: "material_type",       value: req.body.material_type       || "" },
+    { name: "quantity",            value: req.body.quantity            || "" },
+    { name: "timeline",            value: req.body.timeline            || "" },
+    { name: "file_url",            value: fileUrl                           },
+  ].filter(field => field.value !== ""), // ✅ removes empty fields entirely
+  context: {
+    pageUri: req.headers.origin || "",
+    pageName: "RFQ Form",
+  },
+};
 
     console.log("📋 Submitting to HubSpot form...");
     console.log("📋 file_url value being sent:", fileUrl);

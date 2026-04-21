@@ -16,20 +16,45 @@ app.get("/", (req, res) => {
 });
 
 // ✅ Test if files scope is working
+// ✅ Fixed test route
 app.get("/test-token", async (req, res) => {
   try {
+    // ✅ Use account info endpoint to verify token works
     const r = await axios.get(
-      "https://api.hubapi.com/files/v3/files?limit=1",
+      "https://api.hubapi.com/account-info/v3/details",
       {
         headers: { Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}` },
         validateStatus: () => true,
       }
     );
-    res.json({
-      files_scope_works: r.status === 200 ? "✅ YES - file upload will work" : "❌ NO - still getting " + r.status,
-      status: r.status,
-      response: r.data,
-    });
+
+    if (r.status === 200) {
+      // ✅ Token valid — now test files scope specifically
+      const fileTest = await axios.post(
+        "https://api.hubapi.com/files/v3/files/search",
+        { limit: 1 },
+        {
+          headers: {
+            Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+          validateStatus: () => true,
+        }
+      );
+
+      res.json({
+        token_valid: "✅ YES",
+        portal_id: r.data?.portalId,
+        files_scope: fileTest.status === 200 ? "✅ files scope works" : "❌ files scope missing - status: " + fileTest.status,
+        files_response: fileTest.data,
+      });
+    } else {
+      res.json({
+        token_valid: "❌ NO",
+        status: r.status,
+        error: r.data,
+      });
+    }
   } catch (err) {
     res.json({ error: err.message });
   }

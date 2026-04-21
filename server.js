@@ -18,7 +18,7 @@ app.get("/", (req, res) => {
 // ✅ TEST ROUTE — visit this to confirm token and scopes work
 app.get("/test-token", async (req, res) => {
   try {
-    const response = await axios.get("https://api.hubapi.com/files/v3/files?limit=1", {
+        const response = await axios.get("https://api.hubapi.com/integrations/v1/me", {
       headers: {
         Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}`,
       },

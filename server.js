@@ -31,7 +31,7 @@ app.get("/test-token", async (req, res) => {
     results.token_valid = "❌ ERROR: " + e.message;
   }
 
-  // Test 2: Upload a tiny test file to check files scope
+  // Test 2: Upload a tiny test file with folderId
   try {
     const testForm = new FormData();
     const testBuffer = Buffer.from("test file content");
@@ -46,6 +46,7 @@ app.get("/test-token", async (req, res) => {
       duplicateValidationStrategy: "NONE",
       duplicateValidationScope: "ENTIRE_PORTAL",
     }));
+    testForm.append("folderId", "211430036516"); // ✅ your folder ID
 
     const r2 = await axios.post(
       "https://api.hubapi.com/files/v3/files",
@@ -93,7 +94,6 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
           type: req.file.mimetype,
           size: req.file.size,
         });
-        console.log("🔑 Token starts with:", process.env.HUBSPOT_TOKEN?.substring(0, 15));
 
         const fileFormData = new FormData();
         fileFormData.append("file", req.file.buffer, {
@@ -107,6 +107,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
           duplicateValidationStrategy: "NONE",
           duplicateValidationScope: "ENTIRE_PORTAL",
         }));
+        fileFormData.append("folderId", "211430036516"); // ✅ your folder ID
 
         console.log("⬆️ Uploading to HubSpot Files API...");
 

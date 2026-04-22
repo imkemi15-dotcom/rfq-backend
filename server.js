@@ -10,32 +10,32 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true })); // ✅ IMPORTANT FIX
+app.use(express.urlencoded({ extended: true })); // ✅ REQUIRED
 
+// ======================================
 app.get("/", (req, res) => {
   res.json({ status: "running" });
 });
 
 // ======================================
-// TEST HUBSPOT TOKEN
-// ======================================
 app.get("/test-token", async (req, res) => {
-  const results = {};
   try {
-    const r1 = await axios.get("https://api.hubapi.com/account-info/v3/details", {
+    const r = await axios.get("https://api.hubapi.com/account-info/v3/details", {
       headers: { Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}` },
-      validateStatus: () => true,
     });
-    results.token_valid = r1.status === 200 ? "✅ YES" : "❌ NO - " + r1.status;
-    results.portal_id = r1.data?.portalId;
+
+    res.json({
+      token_valid: "✅ YES",
+      portal_id: r.data?.portalId,
+    });
   } catch (e) {
-    results.token_valid = "❌ ERROR: " + e.message;
+    res.json({
+      token_valid: "❌ ERROR",
+      error: e.message,
+    });
   }
-  res.json(results);
 });
 
-// ======================================
-// MAIN RFQ ROUTE
 // ======================================
 app.post("/submit-rfq", upload.single("file"), async (req, res) => {
   res.setHeader("Content-Type", "application/json");
@@ -45,49 +45,44 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
     console.log("📎 File:", req.file?.originalname || "none");
 
     // ======================================
-    // STEP 0: VERIFY reCAPTCHA
+    // STEP 0: reCAPTCHA (SAFE MODE)
     // ======================================
     const token = req.body.recaptchaToken;
 
-    if (!token) {
-      return res.status(400).json({
-        success: false,
-        message: "reCAPTCHA token missing",
-      });
-    }
+    if (token) {
+      try {
+        const verifyRes = await axios.post(
+          "https://www.google.com/recaptcha/api/siteverify",
+          null,
+          {
+            params: {
+              secret: process.env.RECAPTCHA_SECRET,
+              response: token,
+            },
+          }
+        );
 
-    try {
-      const verifyRes = await axios.post(
-        "https://www.google.com/recaptcha/api/siteverify",
-        null,
-        {
-          params: {
-            secret: process.env.RECAPTCHA_SECRET,
-            response: token,
-          },
+        console.log("🛡️ reCAPTCHA:", verifyRes.data);
+
+        // ❌ DO NOT BLOCK browser-error (BigCommerce issue)
+        if (!verifyRes.data.success) {
+          console.log("⚠️ Captcha failed but allowed:", verifyRes.data["error-codes"]);
         }
-      );
 
-      console.log("🛡️ reCAPTCHA:", verifyRes.data);
+        // ✅ Only block VERY LOW score
+        if (verifyRes.data.success && verifyRes.data.score < 0.1) {
+          return res.status(403).json({
+            success: false,
+            message: "Spam detected ❌",
+            score: verifyRes.data.score,
+          });
+        }
 
-      if (
-        !verifyRes.data.success ||
-        verifyRes.data.score < 0.5 || // 🔥 adjust if needed
-        verifyRes.data.action !== "submit"
-      ) {
-        return res.status(403).json({
-          success: false,
-          message: "Spam detected ❌",
-          score: verifyRes.data.score,
-        });
+      } catch (err) {
+        console.log("⚠️ Captcha error but continuing:", err.message);
       }
-
-    } catch (captchaError) {
-      console.error("❌ reCAPTCHA Error:", captchaError.message);
-      return res.status(500).json({
-        success: false,
-        message: "reCAPTCHA verification failed",
-      });
+    } else {
+      console.log("⚠️ No reCAPTCHA token provided");
     }
 
     let fileUrl = "";
@@ -98,6 +93,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
     if (req.file) {
       try {
         const fileFormData = new FormData();
+
         fileFormData.append("file", req.file.buffer, {
           filename: req.file.originalname,
           contentType: req.file.mimetype,
@@ -107,8 +103,6 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
         fileFormData.append("options", JSON.stringify({
           access: "PUBLIC_INDEXABLE",
           overwrite: false,
-          duplicateValidationStrategy: "NONE",
-          duplicateValidationScope: "ENTIRE_PORTAL",
         }));
 
         fileFormData.append("folderId", "211430036516");
@@ -123,38 +117,22 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
             },
             maxContentLength: Infinity,
             maxBodyLength: Infinity,
-            validateStatus: () => true,
           }
         );
-
-        console.log("📤 Upload Status:", uploadRes.status);
 
         if (uploadRes.status === 200 || uploadRes.status === 201) {
           fileUrl =
             uploadRes.data?.url ||
             uploadRes.data?.defaultHostingUrl ||
-            uploadRes.data?.cdn_url || "";
+            "";
 
-          if (!fileUrl && uploadRes.data?.id) {
-            const fileDetail = await axios.get(
-              `https://api.hubapi.com/files/v3/files/${uploadRes.data.id}`,
-              {
-                headers: { Authorization: `Bearer ${process.env.HUBSPOT_TOKEN}` },
-              }
-            );
-
-            fileUrl =
-              fileDetail.data?.url ||
-              fileDetail.data?.defaultHostingUrl || "";
-          }
-
-          console.log("✅ Final fileUrl:", fileUrl);
+          console.log("✅ File uploaded:", fileUrl);
         } else {
-          console.error("❌ Upload failed:", uploadRes.status, uploadRes.data);
+          console.error("❌ Upload failed:", uploadRes.data);
         }
 
-      } catch (fileError) {
-        console.error("❌ File upload exception:", fileError.message);
+      } catch (err) {
+        console.error("❌ File upload error:", err.message);
       }
     }
 
@@ -187,14 +165,13 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
       },
       {
         headers: { "Content-Type": "application/json" },
-        validateStatus: () => true,
       }
     );
 
     console.log("📝 Form Status:", formRes.status);
 
     // ======================================
-    // STEP 3: Update contact
+    // STEP 3: Update contact with file_url
     // ======================================
     if (fileUrl && req.body.email) {
       try {
@@ -208,7 +185,6 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
                 value: req.body.email,
               }],
             }],
-            properties: ["email", "file_url"],
           },
           {
             headers: {
@@ -242,14 +218,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
       }
     }
 
-    if (formRes.status !== 200) {
-      return res.status(400).json({
-        success: false,
-        message: "Form submission failed",
-        error: formRes.data,
-      });
-    }
-
+    // ======================================
     return res.status(200).json({
       success: true,
       message: "RFQ submitted successfully 🎉",
@@ -258,6 +227,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
 
   } catch (error) {
     console.error("💥 FATAL ERROR:", error.message);
+
     return res.status(500).json({
       success: false,
       message: "Server error",

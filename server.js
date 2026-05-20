@@ -177,17 +177,19 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
     // ======================================
     // Build context object — include hutk if available
     // ======================================
-    const submissionContext = {
-      pageUri: req.headers.origin || req.headers.referer || "",
-      pageName: "RFQ Form",
-    };
+   const submissionContext = {
+  pageUri: req.headers.origin || req.headers.referer || "",
+  pageName: "RFQ Form",
+  ipAddress: req.headers["x-forwarded-for"]?.split(",")[0].trim()
+             || req.headers["x-real-ip"]
+             || req.socket.remoteAddress
+             || "",
+};
 
-    // ✅ Pass hutk cookie to link submission to existing HubSpot contact
-    const hutk = req.body.hutk || "";
-    if (hutk) {
-      submissionContext.hutk = hutk;
-      console.log("🍪 hutk attached to submission:", hutk);
-    } else {
+if (hutk) {
+  submissionContext.hutk = hutk;
+  console.log("🍪 hutk attached to submission:", hutk);
+} else {
       console.log("⚠️ No hutk cookie — submission will not be linked to contact cookie");
     }
 

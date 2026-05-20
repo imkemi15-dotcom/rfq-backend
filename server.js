@@ -8,7 +8,7 @@ const FormData = require("form-data");
 const app = express();
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // ✅ 10MB max file size
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max file size
 });
 
 app.use(cors());
@@ -49,6 +49,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
   try {
     console.log("📩 Body:", req.body);
     console.log("📎 File:", req.file?.originalname || "none");
+    console.log("🍪 hutk:", req.body.hutk || "not provided");
 
     // ======================================
     // STEP 0: reCAPTCHA verification
@@ -71,8 +72,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
 
         console.log("🛡️ reCAPTCHA result:", captchaRes.data);
 
-        // ✅ Only block very obvious bots (score < 0.1)
-        // Don't block on errors — BigCommerce can cause browser-error
+        // Only block very obvious bots (score < 0.1)
         if (captchaRes.data.success && captchaRes.data.score < 0.1) {
           return res.status(403).json({
             success: false,
@@ -80,7 +80,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
           });
         }
       } catch (captchaErr) {
-        // ✅ Never block form if reCAPTCHA itself fails
+        // Never block form if reCAPTCHA itself fails
         console.log("⚠️ reCAPTCHA check failed, continuing:", captchaErr.message);
       }
     } else {
@@ -131,7 +131,7 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
             uploadRes.data?.url ||
             uploadRes.data?.defaultHostingUrl || "";
 
-          // ✅ Fallback — fetch URL by ID if not in response
+          // Fallback — fetch URL by ID if not in response
           if (!fileUrl && uploadRes.data?.id) {
             const fileDetail = await axios.get(
               `https://api.hubapi.com/files/v3/files/${uploadRes.data.id}`,
@@ -174,14 +174,28 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
 
     console.log("📋 Submitting fields:", JSON.stringify(fields, null, 2));
 
+    // ======================================
+    // Build context object — include hutk if available
+    // ======================================
+    const submissionContext = {
+      pageUri: req.headers.origin || req.headers.referer || "",
+      pageName: "RFQ Form",
+    };
+
+    // ✅ Pass hutk cookie to link submission to existing HubSpot contact
+    const hutk = req.body.hutk || "";
+    if (hutk) {
+      submissionContext.hutk = hutk;
+      console.log("🍪 hutk attached to submission:", hutk);
+    } else {
+      console.log("⚠️ No hutk cookie — submission will not be linked to contact cookie");
+    }
+
     const formRes = await axios.post(
       `https://api.hsforms.com/submissions/v3/integration/submit/${portalId}/${formGuid}`,
       {
         fields,
-        context: {
-          pageUri: req.headers.origin || "",
-          pageName: "RFQ Form",
-        },
+        context: submissionContext,
       },
       {
         headers: { "Content-Type": "application/json" },

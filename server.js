@@ -175,23 +175,34 @@ app.post("/submit-rfq", upload.single("file"), async (req, res) => {
     console.log("📋 Submitting fields:", JSON.stringify(fields, null, 2));
 
     // ======================================
-    // Build context object — include hutk if available
+    // Build context object — hutk + IP address
     // ======================================
-   const submissionContext = {
-  pageUri: req.headers.origin || req.headers.referer || "",
-  pageName: "RFQ Form",
-  ipAddress: req.headers["x-forwarded-for"]?.split(",")[0].trim()
-             || req.headers["x-real-ip"]
-             || req.socket.remoteAddress
-             || "",
-};
 
-if (hutk) {
-  submissionContext.hutk = hutk;
-  console.log("🍪 hutk attached to submission:", hutk);
-} else {
+    // ✅ Get real visitor IP (works on Render, Nginx, Cloudflare)
+    const ipAddress =
+      (req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
+      req.headers["x-real-ip"] ||
+      req.socket.remoteAddress ||
+      "";
+
+    console.log("🌐 IP address:", ipAddress || "not found");
+
+    const submissionContext = {
+      pageUri: req.headers.origin || req.headers.referer || "",
+      pageName: "RFQ Form",
+      ipAddress,
+    };
+
+    // ✅ Pass hutk cookie to link submission to existing HubSpot contact
+    const hutk = req.body.hutk || "";
+    if (hutk) {
+      submissionContext.hutk = hutk;
+      console.log("🍪 hutk attached to submission:", hutk);
+    } else {
       console.log("⚠️ No hutk cookie — submission will not be linked to contact cookie");
     }
+
+    console.log("📤 Submitting to HubSpot with context:", JSON.stringify(submissionContext, null, 2));
 
     const formRes = await axios.post(
       `https://api.hsforms.com/submissions/v3/integration/submit/${portalId}/${formGuid}`,
@@ -207,6 +218,18 @@ if (hutk) {
 
     console.log("📝 Form status:", formRes.status);
     console.log("📝 Form response:", JSON.stringify(formRes.data, null, 2));
+
+    // ✅ If HubSpot rejected the submission, return its actual error message
+    if (formRes.status !== 200 && formRes.status !== 204) {
+      const hsError = formRes.data?.message || formRes.data?.error || JSON.stringify(formRes.data);
+      console.error("❌ HubSpot rejected submission:", formRes.status, hsError);
+      return res.status(400).json({
+        success: false,
+        message: "HubSpot submission failed: " + hsError,
+        hubspot_status: formRes.status,
+        hubspot_response: formRes.data,
+      });
+    }
 
     // ======================================
     // STEP 3: Update contact directly with file_url
@@ -275,10 +298,12 @@ if (hutk) {
 
   } catch (error) {
     console.error("💥 FATAL ERROR:", error.message);
+    console.error("💥 STACK:", error.stack);
     return res.status(500).json({
       success: false,
       message: "Server error",
       error: error.message,
+      stack: process.env.NODE_ENV !== "production" ? error.stack : undefined,
     });
   }
 });
